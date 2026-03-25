@@ -2,49 +2,24 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
-#   "dashscope>=1.20.0",
+#   "dashscope>=1.25.8",
 #   "requests>=2.31.0",
 # ]
 # ///
 """
-阿里云百炼 Qwen/Wanx 图像 CLI
+阿里云百炼图像 CLI
 用法见 SKILL.md
 
 支持功能：
-  text2img    文生图
-  edit        千问指令编辑（支持多图输入）
-  bg          商品背景生成
-  inpaint     图像擦除/局部重绘
-  outpaint    扩图
-  doodle      涂鸦转写实
-  poster      创意海报生成
-  segment     人物实例分割
-  virtualmodel 虚拟模特
+  text2img    千问文生图（qwen-image-2.0-pro / qwen-image-2.0）
+  wan26       万相2.6图像编辑/文生图（wan2.6-image / wan2.6-t2i）
 """
 
 import argparse
-import json
 import os
 import sys
 import time
 from pathlib import Path
-from http import HTTPStatus
-
-# ── 地域限制 ────────────────────────────────────────────────────────────────────
-
-# 以下子命令使用万相（Wanx）模型，仅支持中国内地地域（--region cn）
-WANX_CN_ONLY_CMDS = {"bg", "inpaint", "outpaint", "doodle", "poster", "segment", "virtualmodel"}
-
-def assert_cn_region(args):
-    """万相系列命令必须使用 CN 地域，否则直接报错退出"""
-    if getattr(args, "region", "intl") != "cn":
-        cmd = args.cmd
-        print(
-            f"错误: '{cmd}' 命令使用的万相（Wanx）模型仅在中国内地地域可用。\n"
-            "请添加 --region cn 后重试。",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -55,54 +30,14 @@ def get_api_key(args_key=None):
         sys.exit(1)
     return key
 
-def get_base_url(region="intl"):
-    """返回 DashScope base URL"""
-    if region == "cn":
-        return "https://dashscope.aliyuncs.com/api/v1"
-    return "https://dashscope-intl.aliyuncs.com/api/v1"  # 默认新加坡
-
-def poll_task(task_id: str, base_url: str, api_key: str, timeout: int = 300) -> dict:
-    """轮询异步任务结果"""
-    import requests
-    url = f"{base_url}/tasks/{task_id}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    start = time.time()
-    while time.time() - start < timeout:
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        status = data.get("output", {}).get("task_status", "")
-        print(f"  状态: {status}", flush=True)
-        if status == "SUCCEEDED":
-            return data["output"]
-        elif status == "FAILED":
-            print(f"任务失败: {json.dumps(data, ensure_ascii=False)}", file=sys.stderr)
-            sys.exit(1)
-        time.sleep(3)
-    print("任务超时", file=sys.stderr)
-    sys.exit(1)
-
-def post_async(endpoint: str, payload: dict, base_url: str, api_key: str) -> dict:
-    """发起异步请求，返回轮询结果"""
-    import requests
-    url = f"{base_url}/{endpoint}"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "X-DashScope-Async": "enable",
-    }
-    r = requests.post(url, headers=headers, json=payload, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    task_id = data.get("output", {}).get("task_id")
-    if not task_id:
-        print(f"创建任务失败: {json.dumps(data, ensure_ascii=False)}", file=sys.stderr)
-        sys.exit(1)
-    print(f"任务已创建 task_id={task_id}", flush=True)
-    return poll_task(task_id, base_url, api_key)
+def get_base_url(region="cn"):
+    if region == "us":
+        return "https://dashscope-us.aliyuncs.com/api/v1"
+    if region == "intl":
+        return "https://dashscope-intl.aliyuncs.com/api/v1"
+    return "https://dashscope.aliyuncs.com/api/v1"
 
 def save_images(urls: list, output_dir: str, prefix: str = "output") -> list:
-    """下载并保存图片，返回本地路径列表"""
     import requests
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     saved = []
@@ -118,370 +53,279 @@ def save_images(urls: list, output_dir: str, prefix: str = "output") -> list:
         print(f"已保存: {path}")
     return saved
 
-def extract_image_urls(output: dict) -> list:
-    """从 API 返回结果中提取图片 URL"""
-    urls = []
-    # wanx 异步接口
-    for item in output.get("results", []):
-        if item.get("url"):
-            urls.append(item["url"])
-    # 海报接口字段名不同
-    for item in output.get("render_urls", []):
-        urls.append(item)
-    return urls
-
 
 # ── 功能实现 ────────────────────────────────────────────────────────────────────
 
 def cmd_text2img(args, api_key, base_url):
-    """文生图：qwen-image-2.0 系列用同步接口（MultiModalConversation），其余用异步接口（ImageSynthesis）"""
+    """千问文生图（qwen-image-2.0-pro / qwen-image-2.0 / qwen-image-max / qwen-image-plus / qwen-image）"""
     import dashscope
+    from dashscope import MultiModalConversation
     dashscope.base_http_api_url = base_url
 
     model = args.model or "qwen-image-2.0-pro"
     print(f"文生图中 model={model} …")
-
-    # qwen-image-2.0 系列必须使用同步接口（MultiModalConversation）
-    if model.startswith("qwen-image-2.0"):
-        from dashscope import MultiModalConversation
-        default_size = "2048*2048"
-        response = MultiModalConversation.call(
-            api_key=api_key,
-            model=model,
-            messages=[{"role": "user", "content": [{"text": args.prompt}]}],
-            result_format="message",
-            stream=False,
-            watermark=False,
-            prompt_extend=not args.no_extend,
-            n=args.n,
-            size=args.size or default_size,
-            negative_prompt=args.negative_prompt or "",
-        )
-        if response.status_code != 200:
-            print(f"错误: {response.status_code} {response.message}", file=sys.stderr)
-            sys.exit(1)
-        output_content = response.output.choices[0].message.content
-        urls = [item["image"] for item in output_content if item.get("image")]
-    else:
-        # qwen-image-plus / qwen-image / qwen-image-max 使用异步接口（SDK 自动轮询）
-        from dashscope import ImageSynthesis
-        default_size = "1328*1328"
-        rsp = ImageSynthesis.call(
-            api_key=api_key,
-            model=model,
-            prompt=args.prompt,
-            negative_prompt=args.negative_prompt or "",
-            n=args.n,
-            size=args.size or default_size,
-            prompt_extend=not args.no_extend,
-            watermark=False,
-        )
-        if rsp.status_code != HTTPStatus.OK:
-            print(f"错误: {rsp.status_code} {rsp.code} {rsp.message}", file=sys.stderr)
-            sys.exit(1)
-        urls = [r.url for r in rsp.output.results]
-
+    call_kwargs = dict(
+        api_key=api_key,
+        model=model,
+        messages=[{"role": "user", "content": [{"text": args.prompt}]}],
+        result_format="message",
+        stream=False,
+        watermark=args.watermark,
+        prompt_extend=not args.no_extend,
+        n=args.n,
+        size=args.size or "2048*2048",
+        negative_prompt=args.negative_prompt or "",
+    )
+    if args.seed is not None:
+        call_kwargs["seed"] = args.seed
+    response = MultiModalConversation.call(**call_kwargs)
+    if response.status_code != 200:
+        print(f"错误: {response.status_code} {response.message}", file=sys.stderr)
+        sys.exit(1)
+    urls = [item["image"] for item in response.output.choices[0].message.content if item.get("image")]
     return save_images(urls, args.output_dir, "text2img")
 
 
 def cmd_edit(args, api_key, base_url):
-    """千问图像编辑（单图/多图 + 指令）"""
+    """千问图像编辑（qwen-image-2.0-pro / qwen-image-2.0 / qwen-image-edit-max / qwen-image-edit-plus / qwen-image-edit）"""
     import dashscope
-    dashscope.base_http_api_url = base_url
     from dashscope import MultiModalConversation
+    dashscope.base_http_api_url = base_url
 
-    model = args.model or "qwen-image-edit-max"
     images = args.images or []
-    content = [{"image": img} for img in images]
-    content.append({"text": args.prompt})
+    if not images:
+        print("错误: edit 命令至少需要 1 张输入图（--images）", file=sys.stderr)
+        sys.exit(1)
+    if len(images) > 3:
+        print("错误: edit 命令最多支持 3 张输入图", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"图像编辑中 model={model} …")
+    model = args.model or "qwen-image-2.0-pro"
+    content = [{"image": img} for img in images] + [{"text": args.prompt}]
+
+    print(f"图像编辑中 model={model}，{len(images)} 张输入图 …")
     call_kwargs = dict(
         api_key=api_key,
         model=model,
         messages=[{"role": "user", "content": content}],
         result_format="message",
         stream=False,
-        watermark=False,
+        watermark=args.watermark,
         prompt_extend=not args.no_extend,
         n=args.n,
+        negative_prompt=args.negative_prompt or "",
     )
     if args.size:
         call_kwargs["size"] = args.size
+    if args.seed is not None:
+        call_kwargs["seed"] = args.seed
     response = MultiModalConversation.call(**call_kwargs)
     if response.status_code != 200:
         print(f"错误: {response.status_code} {response.message}", file=sys.stderr)
         sys.exit(1)
-    output_content = response.output.choices[0].message.content
-    urls = [item["image"] for item in output_content if item.get("image")]
+    urls = [item["image"] for item in response.output.choices[0].message.content if item.get("image")]
     return save_images(urls, args.output_dir, "edit")
 
 
-def cmd_bg(args, api_key, base_url):
-    """商品背景生成（wanx-background-generation-v2）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填（RGBA 透明通道图片 URL）", file=sys.stderr)
+def cmd_wan26(args, api_key, base_url):
+    """万相2.6图像编辑/文生图（wan2.6-image / wan2.6-t2i）"""
+    import dashscope
+    from dashscope.aigc.image_generation import ImageGeneration
+    from dashscope.api_entities.dashscope_response import Message
+    dashscope.base_http_api_url = base_url
+
+    model = args.model or "wan2.6-image"
+    images = args.images or []
+
+    # wan2.6-t2i 只支持文生图（无图输入）
+    if model == "wan2.6-t2i" and images:
+        print("错误: wan2.6-t2i 为纯文生图模型，不支持 --images 输入", file=sys.stderr)
         sys.exit(1)
-    payload = {
-        "model": "wanx-background-generation-v2",
-        "input": {
-            "base_image_url": args.image,
-            "prompt": args.prompt or "",
-        },
-        "parameters": {
-            "n": args.n,
-            "model_version": args.model_version or "v3",
-        },
-    }
-    if args.ref_image:
-        payload["input"]["ref_image_url"] = args.ref_image
-    print("商品背景生成中 …")
-    output = post_async("services/aigc/background-generation/generation", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "bg")
 
+    if model == "wan2.6-t2i":
+        # 纯文生图模式：不使用 enable_interleave，同步调用
+        print(f"万相2.6文生图中 model={model} …")
+        message = Message(role="user", content=[{"text": args.prompt}])
+        call_kwargs = dict(
+            model=model,
+            api_key=api_key,
+            messages=[message],
+            n=args.n or 1,
+            negative_prompt=args.negative_prompt or "",
+            prompt_extend=not args.no_extend,
+            watermark=args.watermark,
+        )
+        if args.size:
+            call_kwargs["size"] = args.size
+        if args.seed is not None:
+            call_kwargs["seed"] = args.seed
 
-def cmd_inpaint(args, api_key, base_url):
-    """图像擦除补全 / 局部重绘（wanx2.1-imageedit）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填", file=sys.stderr)
+        rsp = ImageGeneration.call(**call_kwargs)
+        if rsp.status_code != 200:
+            print(f"错误: {rsp.status_code} {rsp.message}", file=sys.stderr)
+            sys.exit(1)
+
+        image_urls = []
+        for choice in (rsp.output.choices or []):
+            for item in (choice.message.content or []):
+                if item.get("type") == "image":
+                    image_urls.append(item["image"])
+        return save_images(image_urls, args.output_dir, "wan26")
+
+    # wan2.6-image：有图→图像编辑，无图或 --interleave→图文混排
+    enable_interleave = (len(images) == 0) or args.interleave
+
+    if enable_interleave and len(images) > 1:
+        print("错误: 图文混排模式最多支持 1 张输入图（图像编辑模式请去掉 --interleave）", file=sys.stderr)
         sys.exit(1)
-    has_mask = bool(args.mask)
-    function = "description_edit_with_mask" if has_mask else "inpainting"
-    input_data = {
-        "function": function,
-        "prompt": args.prompt or "",
-        "base_image_url": args.image,
-    }
-    if has_mask:
-        input_data["mask_image_url"] = args.mask
-    payload = {
-        "model": "wanx2.1-imageedit",
-        "input": input_data,
-        "parameters": {"n": args.n, "prompt_extend": not args.no_extend},
-    }
-    label = "局部重绘" if has_mask else "图像擦除"
-    print(f"{label}中 function={function} …")
-    output = post_async("services/aigc/image2image/image-synthesis", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "inpaint")
-
-
-def cmd_outpaint(args, api_key, base_url):
-    """扩图/画面扩展（wanx2.1-imageedit）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填", file=sys.stderr)
+    if not enable_interleave and len(images) == 0:
+        print("错误: 图像编辑模式必须提供 1~4 张输入图（--images）", file=sys.stderr)
         sys.exit(1)
-    params = {"n": args.n}
-    if args.top:    params["top_expansion"] = args.top
-    if args.bottom: params["bottom_expansion"] = args.bottom
-    if args.left:   params["left_expansion"] = args.left
-    if args.right:  params["right_expansion"] = args.right
-    payload = {
-        "model": "wanx2.1-imageedit",
-        "input": {
-            "function": "outpainting",
-            "prompt": args.prompt or "",
-            "base_image_url": args.image,
-        },
-        "parameters": params,
-    }
-    print("扩图中 …")
-    output = post_async("services/aigc/image2image/image-synthesis", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "outpaint")
 
+    content = [{"text": args.prompt}]
+    for img in images:
+        content.append({"image": img})
+    message = Message(role="user", content=content)
 
-def cmd_doodle(args, api_key, base_url):
-    """涂鸦/草图转写实（wanx2.1-imageedit）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填（线稿/涂鸦图 URL）", file=sys.stderr)
-        sys.exit(1)
-    payload = {
-        "model": "wanx2.1-imageedit",
-        "input": {
-            "function": "doodle",
-            "prompt": args.prompt,
-            "base_image_url": args.image,
-        },
-        "parameters": {"n": args.n, "strength": args.strength or 0.8},
-    }
-    print("涂鸦转写实中 …")
-    output = post_async("services/aigc/image2image/image-synthesis", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "doodle")
+    call_kwargs = dict(
+        model=model,
+        api_key=api_key,
+        messages=[message],
+        enable_interleave=enable_interleave,
+        negative_prompt=args.negative_prompt or "",
+        watermark=args.watermark,
+    )
+    if args.size:
+        call_kwargs["size"] = args.size
+    if args.seed is not None:
+        call_kwargs["seed"] = args.seed
 
+    if enable_interleave:
+        # 图文混排/文生图：同步流式
+        print(f"万相2.6图文混排生成中 model={model} …")
+        call_kwargs["stream"] = True
+        call_kwargs["max_images"] = args.max_images or 5
 
-def cmd_poster(args, api_key, base_url):
-    """创意海报生成（wanx-poster-generation-v1）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.title:
-        print("错误: --title 必填", file=sys.stderr)
-        sys.exit(1)
-    input_data = {"title": args.title}
-    if args.subtitle:    input_data["sub_title"] = args.subtitle
-    if args.body:        input_data["body_text"] = args.body
-    if args.style:       input_data["prompt_text_zh"] = args.style
-    if args.logo:        input_data["logo_url"] = args.logo
-    if args.aux_image:   input_data["auxiliary_image_url"] = args.aux_image
-    payload = {
-        "model": "wanx-poster-generation-v1",
-        "input": input_data,
-        "parameters": {"generate_num": args.n},
-    }
-    print("海报生成中 …")
-    output = post_async("services/aigc/wordart/poster", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "poster")
+        stream_res = ImageGeneration.call(**call_kwargs)
+        text_buf = []
+        image_urls = []
+        for chunk in stream_res:
+            if chunk.status_code != 200:
+                print(f"\n错误: {chunk.status_code} {chunk.message}", file=sys.stderr)
+                sys.exit(1)
+            for choice in (chunk.output.choices or []):
+                for item in (choice.message.content or []):
+                    if item.get("type") == "text":
+                        text_buf.append(item.get("text", ""))
+                        print(item.get("text", ""), end="", flush=True)
+                    elif item.get("type") == "image":
+                        image_urls.append(item["image"])
+        print()
 
+        if text_buf:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+            text_path = str(Path(args.output_dir) / f"{ts}-wan26-text.txt")
+            with open(text_path, "w", encoding="utf-8") as f:
+                f.write("".join(text_buf))
+            print(f"已保存文本: {text_path}")
 
-def cmd_segment(args, api_key, base_url):
-    """人物实例分割（wanx-segmentation）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填", file=sys.stderr)
-        sys.exit(1)
-    payload = {
-        "model": "wanx-segmentation",
-        "input": {"image_url": args.image},
-        "parameters": {"segment_type": args.segment_type or "foreground"},
-    }
-    print("实例分割中 …")
-    output = post_async("services/aigc/image-segmentation/segmentation", payload, base_url, api_key)
-    # 分割结果结构不同，直接打印然后尝试下载
-    print("分割结果:", json.dumps(output, ensure_ascii=False, indent=2))
-    urls = []
-    if output.get("mask_url"):     urls.append(output["mask_url"])
-    if output.get("rgba_url"):     urls.append(output["rgba_url"])
-    if output.get("image_url"):    urls.append(output["image_url"])
-    return save_images(urls, args.output_dir, "segment")
+        return save_images(image_urls, args.output_dir, "wan26")
 
+    else:
+        # 图像编辑模式：同步
+        print(f"万相2.6图像编辑中 model={model}，{len(images)} 张输入图 …")
+        call_kwargs["n"] = args.n or 1
+        call_kwargs["prompt_extend"] = not args.no_extend
 
-def cmd_virtualmodel(args, api_key, base_url):
-    """虚拟模特生成（wanx-virtualmodel / virtualmodel-v2）【仅限中国内地地域】"""
-    assert_cn_region(args)
-    if not args.image:
-        print("错误: --image 必填（真人模特商品图 URL）", file=sys.stderr)
-        sys.exit(1)
-    model = "virtualmodel-v2" if (args.model_version or "v2") == "v2" else "wanx-virtualmodel"
-    input_data = {"model_image_url": args.image}
-    if args.bg_prompt:    input_data["background_prompt"] = args.bg_prompt
-    if args.description:  input_data["model_description"] = args.description
-    payload = {
-        "model": model,
-        "input": input_data,
-        "parameters": {"n": args.n},
-    }
-    print(f"虚拟模特生成中 model={model} …")
-    output = post_async("services/aigc/virtualmodel/generation", payload, base_url, api_key)
-    urls = extract_image_urls(output)
-    return save_images(urls, args.output_dir, "virtualmodel")
+        rsp = ImageGeneration.call(**call_kwargs)
+        if rsp.status_code != 200:
+            print(f"错误: {rsp.status_code} {rsp.message}", file=sys.stderr)
+            sys.exit(1)
+
+        image_urls = []
+        for choice in (rsp.output.choices or []):
+            for item in (choice.message.content or []):
+                if item.get("type") == "image":
+                    image_urls.append(item["image"])
+        return save_images(image_urls, args.output_dir, "wan26")
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="阿里云百炼 Qwen/Wanx 图像 CLI",
+        description="阿里云百炼图像 CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--api-key", help="DashScope API Key（可用 DASHSCOPE_API_KEY 环境变量）")
-    parser.add_argument("--region", default="intl", choices=["intl", "cn"], help="地域：intl=新加坡（默认），cn=北京")
+    parser.add_argument("--region", default="cn", choices=["intl", "cn", "us"],
+                        help="地域：cn=北京（默认），intl=新加坡，us=弗吉尼亚")
     parser.add_argument("--output-dir", default=".", help="输出目录（默认当前目录）")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # text2img
-    p = sub.add_parser("text2img", help="文生图")
-    p.add_argument("--prompt", required=True, help="提示词")
-    p.add_argument("--model", default="qwen-image-2.0-pro", help="模型名，默认 qwen-image-2.0-pro")
-    p.add_argument("--size", default=None, help="分辨率（2.0系列默认2048*2048，其他系列默认1328*1328）")
-    p.add_argument("--n", type=int, default=1, help="生成数量")
-    p.add_argument("--negative-prompt", help="负向提示词")
+    p = sub.add_parser("text2img", help="千问文生图")
+    p.add_argument("--prompt", required=True, help="提示词（最多800字符）")
+    p.add_argument("--model", default="qwen-image-2.0-pro",
+                   choices=["qwen-image-2.0-pro", "qwen-image-2.0",
+                            "qwen-image-max", "qwen-image-plus", "qwen-image"],
+                   help="模型（默认 qwen-image-2.0-pro）")
+    p.add_argument("--size", default=None,
+                   help="分辨率，如 2048*2048（默认）/ 1536*2688 / 2688*1536 等")
+    p.add_argument("--n", type=int, default=1,
+                   help="生成数量（qwen-image-2.0系列最多6张；其余固定1张，默认1）")
+    p.add_argument("--negative-prompt", help="反向提示词")
     p.add_argument("--no-extend", action="store_true", help="禁用提示词自动扩写")
+    p.add_argument("--seed", type=int, default=None, help="随机数种子 [0, 2147483647]")
+    p.add_argument("--watermark", action="store_true", help="添加 Qwen-Image 水印")
 
     # edit
-    p = sub.add_parser("edit", help="千问图像指令编辑（支持 1-3 张输入图）")
-    p.add_argument("--prompt", required=True, help="编辑指令")
-    p.add_argument("--images", nargs="+", help="输入图 URL（最多 3 张）")
-    p.add_argument("--model", default="qwen-image-edit-max", help="模型名，默认 qwen-image-edit-max")
-    p.add_argument("--size", default=None, help="分辨率（可选，不指定则由模型决定）")
-    p.add_argument("--n", type=int, default=1)
-    p.add_argument("--no-extend", action="store_true")
+    p = sub.add_parser("edit", help="千问图像编辑（1-3 张输入图 + 文字指令）")
+    p.add_argument("--prompt", required=True, help="编辑指令（最多800字符）")
+    p.add_argument("--images", nargs="+", required=True,
+                   help="输入图 URL 或本地路径（1-3 张）")
+    p.add_argument("--model", default="qwen-image-2.0-pro",
+                   choices=["qwen-image-2.0-pro", "qwen-image-2.0",
+                            "qwen-image-edit-max", "qwen-image-edit-plus", "qwen-image-edit"],
+                   help="模型（默认 qwen-image-2.0-pro）")
+    p.add_argument("--size", default=None,
+                   help="分辨率（总像素 512×512~2048×2048，如 1024*1024）；默认跟随最后一张输入图")
+    p.add_argument("--n", type=int, default=1,
+                   help="输出图数量（qwen-image-edit 固定1张；其余最多6张，默认1）")
+    p.add_argument("--negative-prompt", help="反向提示词")
+    p.add_argument("--no-extend", action="store_true", help="禁用提示词自动扩写")
+    p.add_argument("--seed", type=int, default=None, help="随机数种子 [0, 2147483647]")
+    p.add_argument("--watermark", action="store_true", help="添加 Qwen-Image 水印")
 
-    # bg
-    p = sub.add_parser("bg", help="商品背景生成（需 RGBA 图）")
-    p.add_argument("--image", required=True, help="RGBA 格式商品图 URL")
-    p.add_argument("--prompt", required=True, help="背景描述")
-    p.add_argument("--ref-image", help="参考风格图 URL（可选）")
-    p.add_argument("--model-version", default="v3", choices=["v2", "v3"])
-    p.add_argument("--n", type=int, default=4)
-
-    # inpaint
-    p = sub.add_parser("inpaint", help="图像擦除补全 / 局部重绘")
-    p.add_argument("--image", required=True, help="原图 URL")
-    p.add_argument("--mask", help="蒙版 URL（白色=重绘区域）；省略则自动擦除模式")
-    p.add_argument("--prompt", default="", help="重绘描述")
-    p.add_argument("--n", type=int, default=1)
-    p.add_argument("--no-extend", action="store_true")
-
-    # outpaint
-    p = sub.add_parser("outpaint", help="扩图（画面扩展）")
-    p.add_argument("--image", required=True, help="原图 URL")
-    p.add_argument("--prompt", default="", help="扩展内容描述")
-    p.add_argument("--top",    type=int, default=0,   help="向上扩展 px")
-    p.add_argument("--bottom", type=int, default=0,   help="向下扩展 px")
-    p.add_argument("--left",   type=int, default=0,   help="向左扩展 px")
-    p.add_argument("--right",  type=int, default=0,   help="向右扩展 px")
-    p.add_argument("--n", type=int, default=1)
-
-    # doodle
-    p = sub.add_parser("doodle", help="涂鸦/草图转写实")
-    p.add_argument("--image", required=True, help="线稿/涂鸦图 URL")
-    p.add_argument("--prompt", required=True, help="描述目标效果")
-    p.add_argument("--strength", type=float, default=0.8, help="生成自由度 0-1（越大越脱离原稿）")
-    p.add_argument("--n", type=int, default=1)
-
-    # poster
-    p = sub.add_parser("poster", help="创意海报生成")
-    p.add_argument("--title", required=True, help="主标题")
-    p.add_argument("--subtitle", help="副标题")
-    p.add_argument("--body", help="正文内容")
-    p.add_argument("--style", help="风格描述（中文）")
-    p.add_argument("--logo", help="Logo 图 URL")
-    p.add_argument("--aux-image", help="辅助商品图 URL")
-    p.add_argument("--n", type=int, default=4)
-
-    # segment
-    p = sub.add_parser("segment", help="人物实例分割")
-    p.add_argument("--image", required=True, help="图片 URL")
-    p.add_argument("--segment-type", default="foreground", choices=["foreground", "person", "all"])
-
-    # virtualmodel
-    p = sub.add_parser("virtualmodel", help="虚拟模特生成")
-    p.add_argument("--image", required=True, help="真人模特商品图 URL")
-    p.add_argument("--bg-prompt", help="背景描述")
-    p.add_argument("--description", help="模特描述")
-    p.add_argument("--model-version", default="v2", choices=["v1", "v2"])
-    p.add_argument("--n", type=int, default=4)
+    # wan26
+    p = sub.add_parser("wan26", help="万相2.6图像编辑/文生图（wan2.6-image / wan2.6-t2i）")
+    p.add_argument("--prompt", required=True, help="提示词（中英文，最多2000字符）")
+    p.add_argument("--model", default="wan2.6-image",
+                   choices=["wan2.6-image", "wan2.6-t2i"],
+                   help="模型（默认 wan2.6-image；wan2.6-t2i 仅支持文生图）")
+    p.add_argument("--images", nargs="+",
+                   help="输入图 URL（图像编辑模式 1-4 张；wan2.6-t2i 不支持）")
+    p.add_argument("--interleave", action="store_true",
+                   help="强制启用图文混排输出模式（有图时默认为图像编辑模式）")
+    p.add_argument("--n", type=int, default=1, help="图像编辑模式生成图片数（1-4，默认 1）")
+    p.add_argument("--max-images", type=int, default=5,
+                   help="图文混排模式最多生成图片数（1-5，默认 5）")
+    p.add_argument("--size", default=None,
+                   help="分辨率（编辑模式：1K/2K 或 宽*高；混排/文生图：宽*高 如 1280*1280）")
+    p.add_argument("--negative-prompt", help="反向提示词")
+    p.add_argument("--no-extend", action="store_true", help="禁用提示词自动扩写（仅图像编辑模式）")
+    p.add_argument("--seed", type=int, default=None, help="随机数种子 [0, 2147483647]")
+    p.add_argument("--watermark", action="store_true", help="添加 AI 生成水印")
 
     return parser
 
 
 HANDLERS = {
-    "text2img":    cmd_text2img,
-    "edit":        cmd_edit,
-    "bg":          cmd_bg,
-    "inpaint":     cmd_inpaint,
-    "outpaint":    cmd_outpaint,
-    "doodle":      cmd_doodle,
-    "poster":      cmd_poster,
-    "segment":     cmd_segment,
-    "virtualmodel": cmd_virtualmodel,
+    "text2img": cmd_text2img,
+    "edit":     cmd_edit,
+    "wan26":    cmd_wan26,
 }
 
 if __name__ == "__main__":

@@ -22,6 +22,12 @@ metadata:
       - kind: uv
         package: uv
         bins: [uv]
+      - kind: pip
+        package: dashscope
+        comment: "Auto-installed by `uv run` via PEP 723 inline deps; only needed when running with plain python"
+      - kind: pip
+        package: requests
+        comment: "Auto-installed by `uv run` via PEP 723 inline deps; only needed when running with plain python"
     emoji: "🎨"
     homepage: https://help.aliyun.com/zh/model-studio/text-to-image
 ---

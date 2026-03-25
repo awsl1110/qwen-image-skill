@@ -1,5 +1,5 @@
 ---
-name: bailian-qwen
+name: qwen-image
 description: >
   调用阿里云百炼（DashScope/Model Studio）平台上的千问系列及万相系列模型，完成图像生成、
   图像编辑、背景生成、扩图、局部重绘、图像擦除、虚拟模特、创意海报、实例分割等任务。
@@ -11,7 +11,7 @@ description: >
   - 用户提及 qwen-image、wanx、ImageSynthesis、MultiModalConversation 等关键词
 ---
 
-# 阿里云百炼 Qwen/Wanx 图像 Skill
+# Qwen Image Skill
 
 通过运行捆绑的脚本实现所有图像功能。**先检查环境，再运行命令。**
 

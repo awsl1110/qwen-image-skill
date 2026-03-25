@@ -30,6 +30,22 @@ import time
 from pathlib import Path
 from http import HTTPStatus
 
+# ── 地域限制 ────────────────────────────────────────────────────────────────────
+
+# 以下子命令使用万相（Wanx）模型，仅支持中国内地地域（--region cn）
+WANX_CN_ONLY_CMDS = {"bg", "inpaint", "outpaint", "doodle", "poster", "segment", "virtualmodel"}
+
+def assert_cn_region(args):
+    """万相系列命令必须使用 CN 地域，否则直接报错退出"""
+    if getattr(args, "region", "intl") != "cn":
+        cmd = args.cmd
+        print(
+            f"错误: '{cmd}' 命令使用的万相（Wanx）模型仅在中国内地地域可用。\n"
+            "请添加 --region cn 后重试。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def get_api_key(args_key=None):
@@ -180,7 +196,7 @@ def cmd_edit(args, api_key, base_url):
     content.append({"text": args.prompt})
 
     print(f"图像编辑中 model={model} …")
-    response = MultiModalConversation.call(
+    call_kwargs = dict(
         api_key=api_key,
         model=model,
         messages=[{"role": "user", "content": content}],
@@ -189,8 +205,10 @@ def cmd_edit(args, api_key, base_url):
         watermark=False,
         prompt_extend=not args.no_extend,
         n=args.n,
-        size=args.size or "1024*1024",
     )
+    if args.size:
+        call_kwargs["size"] = args.size
+    response = MultiModalConversation.call(**call_kwargs)
     if response.status_code != 200:
         print(f"错误: {response.status_code} {response.message}", file=sys.stderr)
         sys.exit(1)
@@ -200,7 +218,8 @@ def cmd_edit(args, api_key, base_url):
 
 
 def cmd_bg(args, api_key, base_url):
-    """商品背景生成（wanx-background-generation-v2）"""
+    """商品背景生成（wanx-background-generation-v2）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填（RGBA 透明通道图片 URL）", file=sys.stderr)
         sys.exit(1)
@@ -224,7 +243,8 @@ def cmd_bg(args, api_key, base_url):
 
 
 def cmd_inpaint(args, api_key, base_url):
-    """图像擦除补全 / 局部重绘（wanx2.1-imageedit）"""
+    """图像擦除补全 / 局部重绘（wanx2.1-imageedit）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填", file=sys.stderr)
         sys.exit(1)
@@ -250,7 +270,8 @@ def cmd_inpaint(args, api_key, base_url):
 
 
 def cmd_outpaint(args, api_key, base_url):
-    """扩图/画面扩展（wanx2.1-imageedit）"""
+    """扩图/画面扩展（wanx2.1-imageedit）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填", file=sys.stderr)
         sys.exit(1)
@@ -275,7 +296,8 @@ def cmd_outpaint(args, api_key, base_url):
 
 
 def cmd_doodle(args, api_key, base_url):
-    """涂鸦/草图转写实（wanx2.1-imageedit）"""
+    """涂鸦/草图转写实（wanx2.1-imageedit）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填（线稿/涂鸦图 URL）", file=sys.stderr)
         sys.exit(1)
@@ -295,7 +317,8 @@ def cmd_doodle(args, api_key, base_url):
 
 
 def cmd_poster(args, api_key, base_url):
-    """创意海报生成（wanx-poster-generation-v1）"""
+    """创意海报生成（wanx-poster-generation-v1）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.title:
         print("错误: --title 必填", file=sys.stderr)
         sys.exit(1)
@@ -317,7 +340,8 @@ def cmd_poster(args, api_key, base_url):
 
 
 def cmd_segment(args, api_key, base_url):
-    """人物实例分割（wanx-segmentation）"""
+    """人物实例分割（wanx-segmentation）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填", file=sys.stderr)
         sys.exit(1)
@@ -338,7 +362,8 @@ def cmd_segment(args, api_key, base_url):
 
 
 def cmd_virtualmodel(args, api_key, base_url):
-    """虚拟模特生成（wanx-virtualmodel / virtualmodel-v2）"""
+    """虚拟模特生成（wanx-virtualmodel / virtualmodel-v2）【仅限中国内地地域】"""
+    assert_cn_region(args)
     if not args.image:
         print("错误: --image 必填（真人模特商品图 URL）", file=sys.stderr)
         sys.exit(1)
@@ -383,8 +408,8 @@ def build_parser():
     p = sub.add_parser("edit", help="千问图像指令编辑（支持 1-3 张输入图）")
     p.add_argument("--prompt", required=True, help="编辑指令")
     p.add_argument("--images", nargs="+", help="输入图 URL（最多 3 张）")
-    p.add_argument("--model", default="qwen-image-edit-max", help="模型名")
-    p.add_argument("--size", default="1024*1024")
+    p.add_argument("--model", default="qwen-image-edit-max", help="模型名，默认 qwen-image-edit-max")
+    p.add_argument("--size", default=None, help="分辨率（可选，不指定则由模型决定）")
     p.add_argument("--n", type=int, default=1)
     p.add_argument("--no-extend", action="store_true")
 

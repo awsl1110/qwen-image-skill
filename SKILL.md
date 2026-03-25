@@ -65,9 +65,52 @@ SKILL_SCRIPT="<skill安装路径>/scripts/run.py"
 ```
 
 安装位置因环境而异，请根据实际情况替换，例如：
-- `~/.claude/skills/bailian-qwen/scripts/run.py`
-- `~/.codex/skills/bailian-qwen/scripts/run.py`
-- `/path/to/skills/bailian-qwen/scripts/run.py`
+- `~/.claude/skills/qwen-image/scripts/run.py`
+- `~/.codex/skills/qwen-image/scripts/run.py`
+- `/path/to/skills/qwen-image/scripts/run.py`
+
+---
+
+## 地域与功能限制
+
+| 子命令 | 使用模型 | 中国大陆（cn） | 海外/新加坡（intl） |
+|--------|---------|:---:|:---:|
+| `text2img` | qwen-image-2.0-pro（默认）/ qwen-image-plus / qwen-image-max 等 | ✅ | ✅ |
+| `edit` | qwen-image-edit-max（默认）/ qwen-image-edit | ✅ | ✅ |
+| `bg` | wanx-background-generation-v2 | ✅ | ❌ 仅限 CN |
+| `inpaint` | wanx2.1-imageedit | ✅ | ❌ 仅限 CN |
+| `outpaint` | wanx2.1-imageedit | ✅ | ❌ 仅限 CN |
+| `doodle` | wanx2.1-imageedit | ✅ | ❌ 仅限 CN |
+| `poster` | wanx-poster-generation-v1 | ✅ | ❌ 仅限 CN |
+| `segment` | wanx-segmentation | ✅ | ❌ 仅限 CN |
+| `virtualmodel` | virtualmodel-v2 | ✅ | ❌ 仅限 CN |
+
+> **万相（Wanx）系列命令**（bg / inpaint / outpaint / doodle / poster / segment / virtualmodel）**仅在中国内地地域可用**，使用这些命令必须加 `--region cn`，否则脚本会报错退出。
+
+---
+
+## 模型选择指南
+
+### text2img 可用模型
+
+| 模型 | 特点 | 接口类型 | 地域 |
+|------|------|------|------|
+| `qwen-image-2.0-pro`（**默认**）| 旗舰，效果最好 | 同步 | CN + intl |
+| `qwen-image-2.0` | 标准版 | 同步 | CN + intl |
+| `qwen-image-max` | 上一代旗舰 | 异步 | CN + intl |
+| `qwen-image-plus` | 上一代平衡版 | 异步 | CN + intl |
+| `qwen-image` | 上一代基础版 | 异步 | CN + intl |
+
+用 `--model <模型名>` 手动指定，不指定则默认 `qwen-image-2.0-pro`。
+
+### edit 可用模型
+
+| 模型 | 特点 | 地域 |
+|------|------|------|
+| `qwen-image-edit-max`（**默认**）| 编辑效果最好 | CN + intl |
+| `qwen-image-edit` | 轻量版 | CN + intl |
+
+用 `--model <模型名>` 手动指定，不指定则默认 `qwen-image-edit-max`。
 
 ---
 

@@ -52,7 +52,35 @@ command -v uv
 echo $DASHSCOPE_API_KEY
 ```
 
-如果 `uv` 不存在：`pip install uv --break-system-packages`
+**关于 Python 依赖（dashscope、requests）：**
+
+脚本顶部包含 [PEP 723](https://peps.python.org/pep-0723/) 内联依赖声明：
+
+```python
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#   "dashscope>=1.25.8",
+#   "requests>=2.31.0",
+# ]
+# ///
+```
+
+使用 `uv run` 时，`uv` 会**自动创建隔离虚拟环境并安装上述依赖**，无需手动操作。
+
+**如果 `uv` 不存在**，先安装 uv：
+
+```bash
+pip install uv --break-system-packages
+```
+
+**如果无法使用 `uv`**，可改用 pip 手动安装依赖后直接运行脚本：
+
+```bash
+pip install "dashscope>=1.25.8" "requests>=2.31.0"
+python $SKILL_SCRIPT text2img --prompt "..."
+```
+
 如果 API Key 为空：提示用户设置对应地域的 API Key：
 - 中国大陆：`export DASHSCOPE_API_KEY="sk-xxx"`（百炼北京控制台获取）
 - 海外：`export DASHSCOPE_API_KEY="sk-xxx"`（Model Studio 新加坡控制台获取）

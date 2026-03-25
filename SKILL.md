@@ -9,6 +9,22 @@ description: >
   - 使用 dashscope SDK 或兼容 OpenAI 接口访问 qwen/wanx 模型
   - 文生图、图生图、涂鸦作画、图像擦除、局部重绘、人物分割、图像背景替换
   - 用户提及 qwen-image、wanx、ImageSynthesis、MultiModalConversation 等关键词
+version: 1.0.0
+metadata:
+  openclaw:
+    requires:
+      env:
+        - DASHSCOPE_API_KEY
+      anyBins:
+        - uv
+        - pip
+    primaryEnv: DASHSCOPE_API_KEY
+    install:
+      - kind: uv
+        package: uv
+        bins: [uv]
+    emoji: "🎨"
+    homepage: https://help.aliyun.com/zh/model-studio/text-to-image
 ---
 
 # Qwen Image Skill
